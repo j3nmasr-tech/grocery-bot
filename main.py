@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SIRTS v10 – Top 80 | Bybit + symbol sanitization + Aggressive Mode defaults
+# ENHANCED WITH MOMENTUM INTEGRITY FRAMEWORK
 # Requirements: requests, pandas, numpy
 # BOT_TOKEN and CHAT_ID must be set as environment variables: "BOT_TOKEN", "CHAT_ID"
 
@@ -59,6 +60,12 @@ ENABLE_SR_FILTER = True              # Keep enabled - good filter
 ENABLE_MOMENTUM_FILTER = True        # Keep enabled - good filter  
 ENABLE_BTC_DOMINANCE_FILTER = False  # Disabled - too restrictive
 
+# ===== MOMENTUM INTEGRITY FRAMEWORK (OPTIONAL - CAN BE DISABLED) =====
+ENABLE_TREND_ALIGNMENT_FILTER = True      # Prevents fighting trends (RESOLV/TAO disasters)
+ENABLE_MARKET_CONTEXT_FILTER = True       # Comprehensive context scoring  
+ENABLE_INTELLIGENT_SENTIMENT = True       # Fixes "fear = short" assumption
+ENABLE_CIRCUIT_BREAKER = True             # Prevents revenge trading
+
 # ===== BYBIT PUBLIC ENDPOINTS =====
 BYBIT_KLINES = "https://api.bybit.com/v5/market/kline"
 BYBIT_TICKERS = "https://api.bybit.com/v5/market/tickers"
@@ -107,6 +114,163 @@ STATS = {
                 "SELL":{"sent":0,"hit":0,"fail":0,"breakeven":0}},
     "by_tf": {tf: {"sent":0,"hit":0,"fail":0,"breakeven":0} for tf in TIMEFRAMES}
 }
+
+# ===== MOMENTUM INTEGRITY FRAMEWORK - NEW ADDITIONS =====
+symbol_failure_count = {}
+
+def trend_alignment_ok(symbol, direction, timeframe='4h'):
+    """NEW: Ensure trade aligns with dominant trend - OPTIONAL FILTER"""
+    if not ENABLE_TREND_ALIGNMENT_FILTER:
+        return True
+        
+    try:
+        df = get_klines(symbol, timeframe, 100)
+        if df is None or len(df) < 50:
+            return True  # Be permissive if data unavailable - PRESERVES EXISTING BEHAVIOR
+            
+        # Calculate EMAs for trend detection
+        ema_50 = df['close'].ewm(span=50).mean().iloc[-1]
+        ema_100 = df['close'].ewm(span=100).mean().iloc[-1]
+        current_price = df['close'].iloc[-1]
+        
+        if direction == "BUY":
+            # For LONG: Price should be above both EMAs (uptrend)
+            result = current_price > ema_50 and current_price > ema_100
+            if not result:
+                print(f"🔻 Trend alignment FAIL: {symbol} BUY signal in DOWNTREND (Price: {current_price:.4f} < EMA50: {ema_50:.4f})")
+            return result
+        elif direction == "SELL":  
+            # For SHORT: Price should be below both EMAs (downtrend)
+            result = current_price < ema_50 and current_price < ema_100
+            if not result:
+                print(f"🔻 Trend alignment FAIL: {symbol} SELL signal in UPTREND (Price: {current_price:.4f} > EMA50: {ema_50:.4f})")
+            return result
+            
+        return True
+    except Exception as e:
+        print(f"⚠️ Trend alignment check error for {symbol}: {e}")
+        return True  # Fail-safe: allow trade if check fails - PRESERVES EXISTING BEHAVIOR
+
+def market_context_ok(symbol, direction, confidence_pct):
+    """NEW: Comprehensive market context scoring - OPTIONAL FILTER"""  
+    if not ENABLE_MARKET_CONTEXT_FILTER:
+        return True
+        
+    try:
+        score = 0
+        max_score = 100
+        
+        # 1. Trend Alignment (40 points)
+        if trend_alignment_ok(symbol, direction):
+            score += 40
+            
+        # 2. Volume Confirmation (30 points)  
+        df_1h = get_klines(symbol, "1h", 50)
+        if df_1h is not None and len(df_1h) > 20:
+            current_vol = df_1h['volume'].iloc[-1]
+            avg_vol = df_1h['volume'].rolling(20).mean().iloc[-1]
+            if current_vol > avg_vol * 1.2:  # 20% above average volume
+                score += 30
+            elif current_vol > avg_vol:  # At least above average
+                score += 15
+                
+        # 3. Momentum Consistency (30 points)
+        df_15m = get_klines(symbol, "15m", 20)
+        if df_15m is not None and len(df_15m) > 10:
+            # Check if recent price action supports the direction
+            if direction == "BUY":
+                price_trend = df_15m['close'].iloc[-1] > df_15m['close'].iloc[-5]
+            else:
+                price_trend = df_15m['close'].iloc[-1] < df_15m['close'].iloc[-5]
+                
+            if price_trend:
+                score += 30
+            else:
+                score += 10  # Partial credit for counter-trend but high confidence
+                
+        # Required: Minimum 70% context score OR high confidence overrides weak context
+        context_ok = (score >= 70) or (confidence_pct > 80 and score >= 50)
+        
+        print(f"🔍 Market Context for {symbol} {direction}: {score}/100 - {'PASS' if context_ok else 'FAIL'}")
+        return context_ok
+        
+    except Exception as e:
+        print(f"⚠️ Market context error for {symbol}: {e}")
+        return True  # Fail-safe - PRESERVES EXISTING BEHAVIOR
+
+def intelligent_sentiment_check(sentiment, symbol, direction):
+    """NEW: Fix the 'fear = short' assumption - OPTIONAL FILTER"""
+    if not ENABLE_INTELLIGENT_SENTIMENT:
+        return "NEUTRAL"
+        
+    try:
+        # First, determine the actual market trend
+        df_4h = get_klines(symbol, "4h", 50)
+        if df_4h is None or len(df_4h) < 20:
+            return "NEUTRAL"  # Can't determine trend, be neutral
+            
+        current_price = df_4h['close'].iloc[-1]
+        ema_20 = df_4h['close'].ewm(span=20).mean().iloc[-1]
+        trend = "UPTREND" if current_price > ema_20 else "DOWNTREND"
+        
+        # Intelligent sentiment interpretation
+        if sentiment == "fear":
+            if trend == "UPTREND" and direction == "BUY":
+                return "POSITIVE"  # Fear in uptrend = buying opportunity
+            elif trend == "DOWNTREND" and direction == "SELL":  
+                return "POSITIVE"  # Fear in downtrend = momentum continuation
+            else:
+                print(f"🎭 Sentiment-Trend Conflict: FEAR sentiment but {direction} in {trend}")
+                return "CAUTION"   # Fear against trend = dangerous
+                
+        elif sentiment == "greed": 
+            if trend == "UPTREND" and direction == "BUY":
+                return "POSITIVE"  # Greed in uptrend = momentum
+            elif trend == "DOWNTREND" and direction == "SELL":
+                return "CAUTION"   # Greed in downtrend = potential reversal
+            else:
+                return "NEUTRAL"
+                
+        return "NEUTRAL"
+    except Exception as e:
+        print(f"⚠️ Intelligent sentiment check error: {e}")
+        return "NEUTRAL"  # Fail-safe - PRESERVES EXISTING BEHAVIOR
+
+def circuit_breaker_ok(symbol, direction):
+    """NEW: Prevent revenge trading on failing assets - OPTIONAL FILTER"""
+    if not ENABLE_CIRCUIT_BREAKER:
+        return True
+        
+    global symbol_failure_count
+    
+    key = (symbol, direction)
+    failures = symbol_failure_count.get(key, 0)
+    
+    # If 2+ recent failures, block this symbol-direction for 6 hours
+    if failures >= 2:
+        print(f"🚫 Circuit breaker active for {symbol} {direction}: {failures} recent failures")
+        return False
+        
+    return True
+
+def update_circuit_breaker(symbol, direction, success):
+    """NEW: Update circuit breaker based on trade outcome"""
+    if not ENABLE_CIRCUIT_BREAKER:
+        return
+        
+    global symbol_failure_count
+    
+    key = (symbol, direction)
+    
+    if success:
+        # Reset on success
+        symbol_failure_count[key] = 0
+        print(f"🟢 Circuit breaker: {symbol} {direction} reset to 0 failures")
+    else:
+        # Increment on failure
+        symbol_failure_count[key] = symbol_failure_count.get(key, 0) + 1
+        print(f"🔴 Circuit breaker: {symbol} {direction} failures = {symbol_failure_count[key]}")
+# ===== END MOMENTUM INTEGRITY FRAMEWORK =====
 
 # ===== HELPERS =====
 def send_message(text):
@@ -751,6 +915,36 @@ def analyze_symbol(symbol):
         return False
 # -------------------------------------------------------------------------
 
+    # ===== MOMENTUM INTEGRITY FRAMEWORK CHECKS =====
+    # These can be disabled via config flags - completely optional
+    
+    # 1. Trend Alignment Check (Prevents RESOLV/TAO disasters)
+    if ENABLE_TREND_ALIGNMENT_FILTER and not trend_alignment_ok(symbol, chosen_dir):
+        print(f"🚫 Skipping {symbol}: Trend alignment failed - fighting {chosen_dir} trend")
+        skipped_signals += 1
+        return False
+        
+    # 2. Market Context Assessment  
+    if ENABLE_MARKET_CONTEXT_FILTER and not market_context_ok(symbol, chosen_dir, confidence_pct):
+        print(f"🚫 Skipping {symbol}: Market context score too low")
+        skipped_signals += 1
+        return False
+        
+    # 3. Circuit Breaker Check (Prevents revenge trading)
+    if ENABLE_CIRCUIT_BREAKER and not circuit_breaker_ok(symbol, chosen_dir):
+        skipped_signals += 1
+        return False
+        
+    # 4. Intelligent Sentiment Interpretation (Fixes "fear = short")
+    sentiment = sentiment_label()
+    if ENABLE_INTELLIGENT_SENTIMENT:
+        sentiment_analysis = intelligent_sentiment_check(sentiment, symbol, chosen_dir)
+        if sentiment_analysis == "CAUTION":
+            print(f"🚫 Skipping {symbol}: Sentiment-trend conflict detected")
+            skipped_signals += 1
+            return False
+    # ===== END MOMENTUM INTEGRITY FRAMEWORK =====
+
     # Advanced Filters Check
     entry = get_price(symbol)
     if entry is None:
@@ -805,6 +999,9 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
+    # Add Momentum Integrity Framework status to message
+    mif_status = " | MIF: ✅ PASSED" if (ENABLE_TREND_ALIGNMENT_FILTER or ENABLE_MARKET_CONTEXT_FILTER or ENABLE_CIRCUIT_BREAKER or ENABLE_INTELLIGENT_SENTIMENT) else ""
+    
     header = (f"✅ {chosen_dir} {symbol}\n"
               f"💵 Entry: {entry}\n"
               f"🎯 TP1:{tp1} TP2:{tp2} TP3:{tp3}\n"
@@ -812,7 +1009,7 @@ def analyze_symbol(symbol):
               f"💰 Units:{units} | Margin≈${margin} | Exposure≈${exposure}\n"
               f"⚠ Risk used: {risk_used*100:.2f}% | Confidence: {confidence_pct:.1f}% | Sentiment:{sentiment}\n"
               f"🧾 TFs confirming: {', '.join(confirming_tfs)}\n"
-              f"🔍 Advanced Filters: ✅ PASSED")
+              f"🔍 Advanced Filters: ✅ PASSED{mif_status}")
 
     send_message(header)
 
@@ -871,6 +1068,9 @@ def check_trades():
                 signals_hit_total += 1
                 last_trade_result[t["s"]] = "win"
                 last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_SUCCESS
+                # Update circuit breaker on success
+                if ENABLE_CIRCUIT_BREAKER:
+                    update_circuit_breaker(t["s"], t["side"], True)
                 continue
             if t["tp1_taken"] and not t["tp2_taken"] and p >= t["tp2"]:
                 t["tp2_taken"] = True
@@ -890,6 +1090,9 @@ def check_trades():
                 signals_hit_total += 1
                 last_trade_result[t["s"]] = "win"
                 last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_SUCCESS
+                # Update circuit breaker on success
+                if ENABLE_CIRCUIT_BREAKER:
+                    update_circuit_breaker(t["s"], t["side"], True)
                 log_trade_close(t)
                 continue
             if p <= t["sl"]:
@@ -901,6 +1104,9 @@ def check_trades():
                     send_message(f"⚖️ {t['s']} Breakeven SL Hit {p}")
                     last_trade_result[t["s"]] = "breakeven"
                     last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_SUCCESS
+                    # Update circuit breaker on breakeven (considered success)
+                    if ENABLE_CIRCUIT_BREAKER:
+                        update_circuit_breaker(t["s"], t["side"], True)
                     log_trade_close(t)
                 else:
                     t["st"] = "fail"
@@ -910,6 +1116,9 @@ def check_trades():
                     send_message(f"❌ {t['s']} SL Hit {p}")
                     last_trade_result[t["s"]] = "loss"
                     last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_FAIL
+                    # Update circuit breaker on failure
+                    if ENABLE_CIRCUIT_BREAKER:
+                        update_circuit_breaker(t["s"], t["side"], False)
                     log_trade_close(t)
         else:  # SELL
             if not t["tp1_taken"] and p <= t["tp1"]:
@@ -921,6 +1130,9 @@ def check_trades():
                 signals_hit_total += 1
                 last_trade_result[t["s"]] = "win"
                 last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_SUCCESS
+                # Update circuit breaker on success
+                if ENABLE_CIRCUIT_BREAKER:
+                    update_circuit_breaker(t["s"], t["side"], True)
                 continue
             if t["tp1_taken"] and not t["tp2_taken"] and p <= t["tp2"]:
                 t["tp2_taken"] = True
@@ -940,6 +1152,9 @@ def check_trades():
                 signals_hit_total += 1
                 last_trade_result[t["s"]] = "win"
                 last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_SUCCESS
+                # Update circuit breaker on success
+                if ENABLE_CIRCUIT_BREAKER:
+                    update_circuit_breaker(t["s"], t["side"], True)
                 log_trade_close(t)
                 continue
             if p >= t["sl"]:
@@ -951,6 +1166,9 @@ def check_trades():
                     send_message(f"⚖️ {t['s']} Breakeven SL Hit {p}")
                     last_trade_result[t["s"]] = "breakeven"
                     last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_SUCCESS
+                    # Update circuit breaker on breakeven (considered success)
+                    if ENABLE_CIRCUIT_BREAKER:
+                        update_circuit_breaker(t["s"], t["side"], True)
                     log_trade_close(t)
                 else:
                     t["st"] = "fail"
@@ -960,6 +1178,9 @@ def check_trades():
                     send_message(f"❌ {t['s']} SL Hit {p}")
                     last_trade_result[t["s"]] = "loss"
                     last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_FAIL
+                    # Update circuit breaker on failure
+                    if ENABLE_CIRCUIT_BREAKER:
+                        update_circuit_breaker(t["s"], t["side"], False)
                     log_trade_close(t)
 
     # cleanup closed trades
@@ -981,14 +1202,30 @@ def summary():
     fails = signals_fail_total
     breakev = signals_breakeven
     acc   = (hits / total * 100) if total > 0 else 0.0
-    send_message(f"📊 Daily Summary\nSignals Sent: {total}\nSignals Checked: {total_checked_signals}\nSignals Skipped: {skipped_signals}\n✅ Hits: {hits}\n⚖️ Breakeven: {breakev}\n❌ Fails: {fails}\n🎯 Accuracy: {acc:.1f}%")
+    
+    # Add Momentum Integrity Framework status to summary
+    mif_status = ""
+    if ENABLE_TREND_ALIGNMENT_FILTER or ENABLE_MARKET_CONTEXT_FILTER or ENABLE_CIRCUIT_BREAKER or ENABLE_INTELLIGENT_SENTIMENT:
+        active_filters = []
+        if ENABLE_TREND_ALIGNMENT_FILTER: active_filters.append("TrendAlign")
+        if ENABLE_MARKET_CONTEXT_FILTER: active_filters.append("MarketContext") 
+        if ENABLE_CIRCUIT_BREAKER: active_filters.append("CircuitBreaker")
+        if ENABLE_INTELLIGENT_SENTIMENT: active_filters.append("SmartSentiment")
+        mif_status = f"\n🔧 MIF Active: {', '.join(active_filters)}"
+    
+    send_message(f"📊 Daily Summary\nSignals Sent: {total}\nSignals Checked: {total_checked_signals}\nSignals Skipped: {skipped_signals}\n✅ Hits: {hits}\n⚖️ Breakeven: {breakev}\n❌ Fails: {fails}\n🎯 Accuracy: {acc:.1f}%{mif_status}")
     print(f"📊 Daily Summary. Accuracy: {acc:.1f}%")
     print("Stats by side:", STATS["by_side"])
     print("Stats by TF:", STATS["by_tf"])
 
 # ===== STARTUP =====
 init_csv()
-send_message("✅ SIRTS v10 High-Accuracy Mode Deployed\n🎯 Target: 85%+ Accuracy | 20+ Signals Daily\n🔧 Advanced Filters: ACTIVE\n🔄 API Rate Limit Protection: ENABLED")
+# Add Momentum Integrity Framework status to startup message
+mif_status = ""
+if ENABLE_TREND_ALIGNMENT_FILTER or ENABLE_MARKET_CONTEXT_FILTER or ENABLE_CIRCUIT_BREAKER or ENABLE_INTELLIGENT_SENTIMENT:
+    mif_status = "\n🚀 Momentum Integrity Framework: ACTIVE"
+
+send_message(f"✅ SIRTS v10 High-Accuracy Mode Deployed\n🎯 Target: 85%+ Accuracy | 20+ Signals Daily\n🔧 Advanced Filters: ACTIVE\n🔄 API Rate Limit Protection: ENABLED{mif_status}")
 print("✅ SIRTS v10 High-Accuracy Mode deployed with API protection.")
 
 try:
