@@ -536,359 +536,131 @@ def next_liquidity_target(df, current_price, direction):
         # Fallback: 2% below current
         return current_price * 0.98
 
-# ===== ROMEOPTP SIGNAL GENERATION =====
+# ===== ROMEOPTP SIGNAL GENERATION WITH DETAILED LOGGING =====
 def generate_signal(symbol):
     """
     🔥 REWRITTEN SIGNAL GENERATION: Pure Romeoptp liquidity manipulation flow
-    Signal Flow:
-    1. Identify CRT range
-    2. Detect sweep of range high/low  
-    3. Confirm reclaim inside the range
-    4. Confirm BOS/MSS in direction of reversal
-    5. Identify order block or FVG as entry zone
-    6. SL = sweep wick high/low
-    7. TP = next liquidity target
+    WITH DETAILED LOGGING
     """
     global total_checked_signals, skipped_signals, signals_sent_total
     
     total_checked_signals += 1
+    print(f"\n🎯 === SCANNING {symbol} ===")
     
     # Get data for multiple timeframes
     best_signal = None
     best_confidence = 0
+    best_tf = None
     
     for tf in TIMEFRAMES:
+        print(f"\n📊 Timeframe: {tf}")
         df = get_klines(symbol, tf, 100)
         if df is None or len(df) < 50:
+            print(f"   ❌ SKIP: No data or insufficient bars")
             continue
+        
+        current_price = df['close'].iloc[-1]
+        print(f"   💰 Current Price: {current_price}")
             
         # 1. IDENTIFY CRT RANGE
         range_high, range_low, range_quality = detect_crt_range(df)
+        print(f"   📈 CRT Range - High: {range_high}, Low: {range_low}, Quality: {range_quality}")
         
-        if range_quality > 0.3:  # Minimum range quality
-            # 2. DETECT SWEEP
-            sweep_direction = detect_crt_sweep(df, range_high, range_low)
+        if range_quality <= 0.3:
+            print(f"   ❌ SKIP: Range quality too low ({range_quality} <= 0.3)")
+            continue
             
-            if sweep_direction:
-                # 3. CONFIRM RECLAIM
-                reclaim_confirmed = detect_crt_reclaim(df, range_high, range_low, sweep_direction)
-                
-                if reclaim_confirmed:
-                    # 4. CONFIRM BOS/MSS
-                    mss_confirmation = detect_bos_mss(df, sweep_direction)
-                    
-                    # 5. CHECK TURTLE SOUP (alternative signal)
-                    turtle_signal = detect_turtle_soup(df)
-                    
-                    # ROMEOPTP SIGNAL LOGIC: turtle_soup OR (crt_sweep AND mss)
-                    valid_signal = False
-                    direction = None
-                    
-                    if turtle_signal == "bullish" or (sweep_direction == "swept_low" and mss_confirmation == "bullish_shift"):
-                        direction = "BUY"
-                        valid_signal = True
-                    elif turtle_signal == "bearish" or (sweep_direction == "swept_high" and mss_confirmation == "bearish_shift"):
-                        direction = "SELL" 
-                        valid_signal = True
-                    
-                    if valid_signal and direction:
-                        # Calculate confidence based on multiple confirmations
-                        confidence = range_quality * 0.4
-                        if mss_confirmation: confidence += 0.3
-                        if turtle_signal: confidence += 0.3
-                        
-                        if confidence > best_confidence:
-                            best_signal = {
-                                'symbol': symbol,
-                                'direction': direction,
-                                'timeframe': tf,
-                                'entry': float(df['close'].iloc[-1]),
-                                'range_high': range_high,
-                                'range_low': range_low,
-                                'sweep_direction': sweep_direction,
-                                'mss_confirmation': mss_confirmation,
-                                'turtle_signal': turtle_signal,
-                                'confidence': confidence * 100
-                            }
-                            best_confidence = confidence
-    
-    if best_signal and best_confidence >= 60:  # Minimum 60% confidence
+        print(f"   ✅ Range quality OK: {range_quality}")
+
+        # 2. DETECT SWEEP
+        sweep_direction = detect_crt_sweep(df, range_high, range_low)
+        print(f"   🔄 Sweep Detection: {sweep_direction}")
+        
+        if not sweep_direction:
+            print(f"   ❌ SKIP: No sweep detected")
+            continue
+            
+        print(f"   ✅ Sweep detected: {sweep_direction}")
+
+        # 3. CONFIRM RECLAIM
+        reclaim_confirmed = detect_crt_reclaim(df, range_high, range_low, sweep_direction)
+        print(f"   🔁 Reclaim Confirmation: {reclaim_confirmed}")
+        
+        if not reclaim_confirmed:
+            print(f"   ❌ SKIP: No reclaim confirmed")
+            continue
+            
+        print(f"   ✅ Reclaim confirmed")
+
+        # 4. CONFIRM BOS/MSS
+        mss_confirmation = detect_bos_mss(df, sweep_direction)
+        print(f"   🏗️  BOS/MSS Confirmation: {mss_confirmation}")
+        
+        # 5. CHECK TURTLE SOUP (alternative signal)
+        turtle_signal = detect_turtle_soup(df)
+        print(f"   🐢 Turtle Soup: {turtle_signal}")
+        
+        # ROMEOPTP SIGNAL LOGIC: turtle_soup OR (crt_sweep AND mss)
+        valid_signal = False
+        direction = None
+        
+        if turtle_signal == "bullish" or (sweep_direction == "swept_low" and mss_confirmation == "bullish_shift"):
+            direction = "BUY"
+            valid_signal = True
+            print(f"   🟢 BULLISH SETUP: Turtle={turtle_signal}, Sweep={sweep_direction}, MSS={mss_confirmation}")
+        elif turtle_signal == "bearish" or (sweep_direction == "swept_high" and mss_confirmation == "bearish_shift"):
+            direction = "SELL"
+            valid_signal = True
+            print(f"   🔴 BEARISH SETUP: Turtle={turtle_signal}, Sweep={sweep_direction}, MSS={mss_confirmation}")
+        else:
+            print(f"   ❌ SKIP: No valid signal combination")
+            print(f"      Turtle: {turtle_signal}, Sweep: {sweep_direction}, MSS: {mss_confirmation}")
+        
+        if valid_signal and direction:
+            # Calculate confidence based on multiple confirmations
+            confidence = range_quality * 0.4
+            if mss_confirmation: 
+                confidence += 0.3
+                print(f"   📊 Confidence +0.3 for MSS")
+            if turtle_signal: 
+                confidence += 0.3
+                print(f"   📊 Confidence +0.3 for Turtle Soup")
+            
+            final_confidence = confidence * 100
+            print(f"   🎯 FINAL CONFIDENCE: {final_confidence:.1f}%")
+            
+            if final_confidence > best_confidence:
+                best_signal = {
+                    'symbol': symbol,
+                    'direction': direction,
+                    'timeframe': tf,
+                    'entry': float(df['close'].iloc[-1]),
+                    'range_high': range_high,
+                    'range_low': range_low,
+                    'sweep_direction': sweep_direction,
+                    'mss_confirmation': mss_confirmation,
+                    'turtle_signal': turtle_signal,
+                    'confidence': final_confidence
+                }
+                best_confidence = final_confidence
+                best_tf = tf
+                print(f"   💾 NEW BEST SIGNAL: {direction} at {best_signal['entry']}")
+
+    if best_signal and best_confidence >= 60:
+        print(f"\n🎉 ✅ SIGNAL GENERATED: {symbol} {best_signal['direction']} | Confidence: {best_confidence:.1f}%")
         return process_romeoptp_signal(best_signal)
+    elif best_signal:
+        print(f"\n❌ SKIP: Confidence too low ({best_confidence:.1f}% < 60%)")
+    else:
+        print(f"\n❌ NO SIGNAL: No valid setups found across all timeframes")
     
     return False
 
-def process_romeoptp_signal(signal):
-    """
-    Process validated Romeoptp signal with proper risk management
-    """
-    global signals_sent_total, STATS, recent_signals
-    
-    symbol = signal['symbol']
-    direction = signal['direction']
-    entry = signal['entry']
-    confidence = signal['confidence']
-    
-    # Get additional data for precise calculations
-    df = get_klines(symbol, signal['timeframe'], 100)
-    if df is None:
-        return False
-    
-    # 5. IDENTIFY ORDER BLOCK OR FVG AS ENTRY ZONE
-    ob_high, ob_low = detect_order_block(df, direction)
-    if ob_high and ob_low:
-        # Use order block midpoint as refined entry
-        entry = (ob_high + ob_low) / 2
-    
-    # 6. SL = SWEEP WICK HIGH/LOW
-    if direction == "BUY":
-        stop_loss = signal['range_low'] * 0.998  # Slightly below range low
-    else:
-        stop_loss = signal['range_high'] * 1.002  # Slightly above range high
-    
-    # 7. TP = NEXT LIQUIDITY TARGET
-    take_profit = next_liquidity_target(df, entry, direction)
-    
-    # Calculate position sizing
-    units, margin, exposure, risk_used = pos_size_units(entry, stop_loss, confidence)
-    
-    if units <= 0:
-        return False
-    
-    # Check for duplicate signals
-    sig_key = (symbol, direction, round(entry, 6))
-    current_time = time.time()
-    if sig_key in recent_signals:
-        time_since_last = current_time - recent_signals[sig_key]
-        if time_since_last < RECENT_SIGNAL_SIGNATURE_EXPIRE:
-            print(f"Skipping {symbol}: duplicate recent signal")
-            skipped_signals += 1
-            return False
-    
-    recent_signals[sig_key] = current_time
-    
-    # Prepare signal message
-    compression_detected, compression_ratio = detect_compression(df)
-    
-    message = (f"🎯 ROMEOPTP LIQUIDITY SIGNAL\n"
-               f"✅ {direction} {symbol} | {signal['timeframe']}\n"
-               f"💵 Entry: {entry:.4f}\n"
-               f"🎯 TP: {take_profit:.4f}\n"
-               f"🛑 SL: {stop_loss:.4f}\n"
-               f"💰 Units: {units:.4f} | Exposure: ${exposure:.2f}\n"
-               f"⚡ Confidence: {confidence:.1f}%\n"
-               f"🔍 Sweep: {signal['sweep_direction']}\n"
-               f"📊 MSS: {signal['mss_confirmation']}\n"
-               f"🐢 Turtle: {signal['turtle_signal']}\n"
-               f"📉 Compression: {'Yes' if compression_detected else 'No'} (Ratio: {compression_ratio:.2f})")
-    
-    send_message(message)
-    
-    # Create trade object
-    trade_obj = {
-        "s": symbol,
-        "side": direction,
-        "entry": entry,
-        "tp1": take_profit,
-        "sl": stop_loss,
-        "st": "open",
-        "units": units,
-        "margin": margin,
-        "exposure": exposure,
-        "risk_pct": risk_used,
-        "confidence_pct": confidence,
-        "tp1_taken": False,
-        "placed_at": time.time(),
-        "entry_tf": signal['timeframe'],
-        "romeoptp_data": signal
-    }
-    
-    open_trades.append(trade_obj)
-    signals_sent_total += 1
-    STATS["by_side"][direction]["sent"] += 1
-    STATS["by_tf"][signal['timeframe']]["sent"] += 1
-    
-    log_signal([
-        datetime.utcnow().isoformat(), symbol, direction, entry,
-        take_profit, None, None, stop_loss, signal['timeframe'], 
-        units, margin, exposure, risk_used*100, confidence, "open", 
-        f"Romeoptp_{signal['sweep_direction']}"
-    ])
-    
-    print(f"✅ ROMEOPTP Signal: {symbol} {direction} at {entry}. Confidence: {confidence:.1f}%")
-    return True
-
-# ===== RETAINED UTILITY FUNCTIONS =====
-def get_atr(symbol, period=14):
-    symbol = sanitize_symbol(symbol)
-    if not symbol:
-        return None
-    df = get_klines(symbol, "1h", period+1)
-    if df is None or len(df) < period+1:
-        return None
-    h = df["high"].values
-    l = df["low"].values
-    c = df["close"].values
-    trs = []
-    for i in range(1, len(df)):
-        trs.append(max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1])))
-    if not trs:
-        return None
-    return max(float(np.mean(trs)), 1e-8)
-
-def trade_params(symbol, entry, side, atr_multiplier_sl=1.7, tp_mults=(1.8,2.8,3.8), conf_multiplier=1.0):
-    atr = get_atr(symbol)
-    if atr is None:
-        return None
-    atr = max(min(atr, entry * 0.05), entry * 0.0001)
-    adj_sl_multiplier = atr_multiplier_sl * (1.0 + (0.5 - conf_multiplier) * 0.5)
-    if side == "BUY":
-        sl  = round(entry - atr * adj_sl_multiplier, 8)
-        tp1 = round(entry + atr * tp_mults[0] * conf_multiplier, 8)
-        tp2 = round(entry + atr * tp_mults[1] * conf_multiplier, 8)
-        tp3 = round(entry + atr * tp_mults[2] * conf_multiplier, 8)
-    else:
-        sl  = round(entry + atr * adj_sl_multiplier, 8)
-        tp1 = round(entry - atr * tp_mults[0] * conf_multiplier, 8)
-        tp2 = round(entry - atr * tp_mults[1] * conf_multiplier, 8)
-        tp3 = round(entry - atr * tp_mults[2] * conf_multiplier, 8)
-    return sl, tp1, tp2, tp3
-
-def pos_size_units(entry, sl, confidence_pct):
-    conf = max(0.0, min(100.0, confidence_pct))
-    risk_percent = MIN_RISK + (MAX_RISK - MIN_RISK) * (conf / 100.0)
-    risk_percent = max(risk_percent, BASE_RISK)
-    risk_percent = max(MIN_RISK, min(MAX_RISK, risk_percent))
-    risk_usd     = CAPITAL * risk_percent
-    sl_dist      = abs(entry - sl)
-    min_sl = max(entry * MIN_SL_DISTANCE_PCT, 1e-8)
-    if sl_dist < min_sl:
-        return 0.0, 0.0, 0.0, risk_percent
-    units = risk_usd / sl_dist
-    exposure = units * entry
-    max_exposure = CAPITAL * MAX_EXPOSURE_PCT
-    if exposure > max_exposure and exposure > 0:
-        units = max_exposure / entry
-        exposure = units * entry
-    margin_req = exposure / LEVERAGE
-    if margin_req < MIN_MARGIN_USD:
-        return 0.0, 0.0, 0.0, risk_percent
-    return round(units,8), round(margin_req,6), round(exposure,6), risk_percent  # ✅ FIXED
-    
-def btc_volatility_spike():
-    df = get_klines("BTCUSDT", "5m", 3)
-    if df is None or len(df) < 3:
-        return False
-    pct = (df["close"].iloc[-1] - df["close"].iloc[0]) / df["close"].iloc[0] * 100.0
-    return abs(pct) >= VOLATILITY_THRESHOLD_PCT
-
-# ===== LOGGING =====
-def init_csv():
-    if not os.path.exists(LOG_CSV):
-        with open(LOG_CSV,"w",newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "timestamp_utc","symbol","side","entry","tp1","tp2","tp3","sl",
-                "tf","units","margin_usd","exposure_usd","risk_pct","confidence_pct","status","breakdown"
-            ])
-
-def log_signal(row):
-    try:
-        with open(LOG_CSV,"a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(row)
-    except Exception as e:
-        print("log_signal error:", e)
-
-def log_trade_close(trade):
-    try:
-        with open(LOG_CSV,"a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                datetime.utcnow().isoformat(), trade["s"], trade["side"], trade.get("entry"),
-                trade.get("tp1"), trade.get("tp2"), trade.get("tp3"), trade.get("sl"),
-                trade.get("entry_tf"), trade.get("units"), trade.get("margin"), trade.get("exposure"),
-                trade.get("risk_pct")*100 if trade.get("risk_pct") else None, trade.get("confidence_pct"),
-                trade.get("st"), "Romeoptp_Closed"
-            ])
-    except Exception as e:
-        print("log_trade_close error:", e)
-
-# ===== TRADE CHECK (TP/SL) =====
-def check_trades():
-    global signals_hit_total, signals_fail_total, signals_breakeven, STATS, last_trade_time, last_trade_result
-    
-    for t in list(open_trades):
-        if t.get("st") != "open":
-            continue
-            
-        p = get_price(t["s"])
-        if p is None:
-            continue
-            
-        side = t["side"]
-
-        if side == "BUY":
-            # Check for TP hit
-            if not t["tp1_taken"] and p >= t["tp1"]:
-                t["tp1_taken"] = True
-                t["st"] = "closed"
-                send_message(f"🎯 {t['s']} TP Hit {p:.4f} — Trade closed.")
-                STATS["by_side"]["BUY"]["hit"] += 1
-                STATS["by_tf"][t["entry_tf"]]["hit"] += 1
-                signals_hit_total += 1
-                last_trade_result[t["s"]] = "win"
-                last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_SUCCESS
-                log_trade_close(t)
-                continue
-                
-            # Check for SL hit
-            if p <= t["sl"]:
-                t["st"] = "fail"
-                signals_fail_total += 1
-                STATS["by_side"]["BUY"]["fail"] += 1
-                STATS["by_tf"][t["entry_tf"]]["fail"] += 1
-                send_message(f"❌ {t['s']} SL Hit {p:.4f}")
-                last_trade_result[t["s"]] = "loss"
-                last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_FAIL
-                log_trade_close(t)
-                
-        else:  # SELL
-            # Check for TP hit
-            if not t["tp1_taken"] and p <= t["tp1"]:
-                t["tp1_taken"] = True
-                t["st"] = "closed"
-                send_message(f"🎯 {t['s']} TP Hit {p:.4f} — Trade closed.")
-                STATS["by_side"]["SELL"]["hit"] += 1
-                STATS["by_tf"][t["entry_tf"]]["hit"] += 1
-                signals_hit_total += 1
-                last_trade_result[t["s"]] = "win"
-                last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_SUCCESS
-                log_trade_close(t)
-                continue
-                
-            # Check for SL hit
-            if p >= t["sl"]:
-                t["st"] = "fail"
-                signals_fail_total += 1
-                STATS["by_side"]["SELL"]["fail"] += 1
-                STATS["by_tf"][t["entry_tf"]]["fail"] += 1
-                send_message(f"❌ {t['s']} SL Hit {p:.4f}")
-                last_trade_result[t["s"]] = "loss"
-                last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_FAIL
-                log_trade_close(t)
-
-    # Cleanup closed trades
-    for t in list(open_trades):
-        if t.get("st") in ("closed", "fail"):
-            try:
-                open_trades.remove(t)
-            except Exception:
-                pass
-
-# ===== ROMEOPTP SYMBOL ANALYSIS =====
+# ===== ENHANCED ANALYZE_SYMBOL WITH LOGGING =====
 def analyze_symbol(symbol):
     """
     🔥 PURE ROMEOPTP ANALYSIS: Only uses Romeoptp liquidity manipulation detection
+    WITH DETAILED LOGGING
     """
     global total_checked_signals, skipped_signals, last_trade_time, volatility_pause_until
     
@@ -896,70 +668,45 @@ def analyze_symbol(symbol):
     now = time.time()
     
     if time.time() < volatility_pause_until:
+        print(f"⏸️  VOLATILITY PAUSE: Skipping {symbol}")
+        skipped_signals += 1
         return False
 
     if not symbol or symbol in SYMBOL_BLACKLIST:
+        print(f"🚫 BLACKLIST: Skipping {symbol}")
         skipped_signals += 1
         return False
 
     # Basic volume check only (no complex volume analysis)
     vol24 = get_24h_quote_volume(symbol)
     if vol24 < 1_500_000.0:
+        print(f"📉 LOW VOLUME: {symbol} - ${vol24:,.0f} (need $1.5M)")
         skipped_signals += 1
         return False
+    else:
+        print(f"📈 VOLUME OK: {symbol} - ${vol24:,.0f}")
 
     # Cooldown check
     if last_trade_time.get(symbol, 0) > now:
+        cooldown_left = last_trade_time[symbol] - now
+        print(f"⏰ COOLDOWN: {symbol} - {cooldown_left:.0f}s remaining")
         skipped_signals += 1
         return False
 
     # Global open-trade limits
-    if len([t for t in open_trades if t.get("st") == "open"]) >= MAX_OPEN_TRADES:
+    open_trade_count = len([t for t in open_trades if t.get("st") == "open"])
+    if open_trade_count >= MAX_OPEN_TRADES:
+        print(f"📊 MAX TRADES: {open_trade_count}/{MAX_OPEN_TRADES} - Skipping {symbol}")
         skipped_signals += 1
         return False
+    else:
+        print(f"📊 TRADES: {open_trade_count}/{MAX_OPEN_TRADES} open")
 
     # 🔥 USE ONLY ROMEOPTP SIGNAL GENERATION - NO LEGACY SCORING
-    print(f"🎯 Romeoptp Scanning {symbol}...")
+    print(f"🎯 ROMEOPTP SCANNING {symbol}...")
     return generate_signal(symbol)
 
-# ===== HEARTBEAT & SUMMARY =====
-def heartbeat():
-    send_message(f"💓 Romeoptp Engine Active {datetime.utcnow().strftime('%H:%M UTC')}")
-    print("💓 Heartbeat sent.")
-
-def summary():
-    total = signals_sent_total
-    hits  = signals_hit_total
-    fails = signals_fail_total
-    acc   = (hits / total * 100) if total > 0 else 0.0
-    
-    message = (f"📊 ROMEOPTP DAILY SUMMARY\n"
-               f"Signals Sent: {total}\n"
-               f"Signals Checked: {total_checked_signals}\n"
-               f"Signals Skipped: {skipped_signals}\n"
-               f"✅ Hits: {hits}\n"
-               f"❌ Fails: {fails}\n"
-               f"🎯 Accuracy: {acc:.1f}%\n"
-               f"🔧 Pure Price Manipulation Analysis")
-    
-    send_message(message)
-    print(f"📊 Daily Summary. Accuracy: {acc:.1f}%")
-
-# ===== STARTUP =====
-init_csv()
-send_message("🚀 ROMEOPTP LIQUIDITY MANIPULATION ENGINE DEPLOYED\n"
-             "🎯 Pure Price-Based Analysis | No EMA/Trend Filters\n"
-             "🔧 CRT + Turtle Soup + BOS/MSS + Order Blocks\n"
-             "⚡ Liquidity Targeting & Sweep Detection Active")
-
-try:
-    SYMBOLS = get_top_symbols(70)
-    print(f"Monitoring {len(SYMBOLS)} symbols.")
-except Exception as e:
-    SYMBOLS = ["BTCUSDT","ETHUSDT"]
-    print("Warning retrieving top symbols, defaulting to BTCUSDT & ETHUSDT.")
-
-# ===== MAIN LOOP =====
+# Update main loop printing to be cleaner
 while True:
     try:
         # Check for BTC volatility spikes
@@ -970,7 +717,9 @@ while True:
 
         # Scan all symbols for Romeoptp setups
         for i, sym in enumerate(SYMBOLS, start=1):
-            print(f"[{i}/{len(SYMBOLS)}] 🎯 Romeoptp Scanning {sym}...")
+            print(f"\n{'='*60}")
+            print(f"[{i}/{len(SYMBOLS)}] 🎯 ROMEOPTP SCANNING {sym}")
+            print(f"{'='*60}")
             try:
                 analyze_symbol(sym)
             except Exception as e:
@@ -989,7 +738,7 @@ while True:
             summary()
             last_summary = now
 
-        print(f"🔁 Cycle completed at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
+        print(f"\n🔁 Cycle completed at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
         time.sleep(CHECK_INTERVAL)
         
     except Exception as e:
