@@ -706,6 +706,42 @@ def analyze_symbol(symbol):
     print(f"🎯 ROMEOPTP SCANNING {symbol}...")
     return generate_signal(symbol)
 
+# ===== LOGGING FUNCTIONS =====
+def init_csv():
+    """Initialize the CSV log file with headers"""
+    if not os.path.exists(LOG_CSV):
+        with open(LOG_CSV, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "timestamp_utc", "symbol", "side", "entry", "tp1", "tp2", "tp3", "sl",
+                "tf", "units", "margin_usd", "exposure_usd", "risk_pct", "confidence_pct", "status", "breakdown"
+            ])
+        print(f"✅ CSV log initialized: {LOG_CSV}")
+
+def log_signal(row):
+    """Log a signal to CSV"""
+    try:
+        with open(LOG_CSV, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(row)
+    except Exception as e:
+        print("log_signal error:", e)
+
+def log_trade_close(trade):
+    """Log trade closure to CSV"""
+    try:
+        with open(LOG_CSV, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                datetime.utcnow().isoformat(), trade["s"], trade["side"], trade.get("entry"),
+                trade.get("tp1"), trade.get("tp2"), trade.get("tp3"), trade.get("sl"),
+                trade.get("entry_tf"), trade.get("units"), trade.get("margin"), trade.get("exposure"),
+                trade.get("risk_pct")*100 if trade.get("risk_pct") else None, trade.get("confidence_pct"),
+                trade.get("st"), "Romeoptp_Closed"
+            ])
+    except Exception as e:
+        print("log_trade_close error:", e)
+
 # ===== STARTUP =====
 init_csv()
 send_message("🚀 ROMEOPTP LIQUIDITY MANIPULATION ENGINE DEPLOYED\n"
