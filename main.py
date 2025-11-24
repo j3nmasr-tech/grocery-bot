@@ -885,14 +885,11 @@ def check_trades():
             except Exception:
                 pass
 
-# ===== VOLUME CHECK (SIMPLIFIED) =====
-def volume_ok(symbol):
-    """Basic volume check - ensure symbol has sufficient liquidity"""
-    vol24 = get_24h_quote_volume(symbol)
-    return vol24 >= 1_500_000.0  # $1.5M minimum 24h volume
-
-# ===== SYMBOL ANALYSIS =====
+# ===== ROMEOPTP SYMBOL ANALYSIS =====
 def analyze_symbol(symbol):
+    """
+    🔥 PURE ROMEOPTP ANALYSIS: Only uses Romeoptp liquidity manipulation detection
+    """
     global total_checked_signals, skipped_signals, last_trade_time, volatility_pause_until
     
     total_checked_signals += 1
@@ -905,24 +902,24 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    # Basic volume check
-    if not volume_ok(symbol):
+    # Basic volume check only (no complex volume analysis)
+    vol24 = get_24h_quote_volume(symbol)
+    if vol24 < 1_500_000.0:
         skipped_signals += 1
         return False
 
     # Cooldown check
     if last_trade_time.get(symbol, 0) > now:
-        print(f"Cooldown active for {symbol}, skipping")
         skipped_signals += 1
         return False
 
     # Global open-trade limits
     if len([t for t in open_trades if t.get("st") == "open"]) >= MAX_OPEN_TRADES:
-        print(f"Skipping {symbol}: max open trades reached ({MAX_OPEN_TRADES}).")
         skipped_signals += 1
         return False
 
-    # Generate Romeoptp signal
+    # 🔥 USE ONLY ROMEOPTP SIGNAL GENERATION - NO LEGACY SCORING
+    print(f"🎯 Romeoptp Scanning {symbol}...")
     return generate_signal(symbol)
 
 # ===== HEARTBEAT & SUMMARY =====
@@ -973,7 +970,7 @@ while True:
 
         # Scan all symbols for Romeoptp setups
         for i, sym in enumerate(SYMBOLS, start=1):
-            print(f"[{i}/{len(SYMBOLS)}] Scanning {sym} for liquidity setups...")
+            print(f"[{i}/{len(SYMBOLS)}] 🎯 Romeoptp Scanning {sym}...")
             try:
                 analyze_symbol(sym)
             except Exception as e:
