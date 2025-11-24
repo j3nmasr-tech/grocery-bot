@@ -581,7 +581,7 @@ def btc_volatility_spike(window=20, threshold=2.0):
 def generate_signal(symbol):
     """
     🔥 REWRITTEN SIGNAL GENERATION: Pure Romeoptp liquidity manipulation flow
-    WITH DETAILED LOGGING
+    WITH ENHANCED DEBUGGING
     """
     global total_checked_signals, skipped_signals, signals_sent_total
     
@@ -601,17 +601,17 @@ def generate_signal(symbol):
             continue
         
         current_price = df['close'].iloc[-1]
-        print(f"   💰 Current Price: {current_price}")
+        print(f"   💰 Current Price: {current_price:.1f}")
+        print(f"   📈 Data Range: {len(df)} bars from {df['timestamp'].iloc[0]} to {df['timestamp'].iloc[-1]}")
             
         # 1. IDENTIFY CRT RANGE
         range_high, range_low, range_quality = detect_crt_range(df)
-        print(f"   📈 CRT Range - High: {range_high}, Low: {range_low}, Quality: {range_quality}")
         
         if range_quality <= 0.3:
-            print(f"   ❌ SKIP: Range quality too low ({range_quality} <= 0.3)")
+            print(f"   ❌ SKIP: Range quality too low ({range_quality:.2f} <= 0.3)")
             continue
             
-        print(f"   ✅ Range quality OK: {range_quality}")
+        print(f"   ✅ Range quality OK: {range_quality:.2f}")
 
         # 2. DETECT SWEEP
         sweep_direction = detect_crt_sweep(df, range_high, range_low)
@@ -685,13 +685,13 @@ def generate_signal(symbol):
                 }
                 best_confidence = final_confidence
                 best_tf = tf
-                print(f"   💾 NEW BEST SIGNAL: {direction} at {best_signal['entry']}")
+                print(f"   💾 NEW BEST SIGNAL: {direction} at {best_signal['entry']:.1f}")
 
     if best_signal and best_confidence >= 40:
         print(f"\n🎉 ✅ SIGNAL GENERATED: {symbol} {best_signal['direction']} | Confidence: {best_confidence:.1f}%")
         return process_romeoptp_signal(best_signal)
     elif best_signal:
-        print(f"\n❌ SKIP: Confidence too low ({best_confidence:.1f}% < 60%)")
+        print(f"\n❌ SKIP: Confidence too low ({best_confidence:.1f}% < 40%)")
     else:
         print(f"\n❌ NO SIGNAL: No valid setups found across all timeframes")
     
