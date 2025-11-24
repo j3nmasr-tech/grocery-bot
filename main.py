@@ -758,13 +758,22 @@ try:
     print(f"🔧 Pure Price Manipulation Analysis")
     print(f"📈 Detailed logging enabled")
     print(f"{'='*60}")
+    
+    # ADD THIS DELAY TO SHOW DEPLOYMENT IS WORKING
+    print("⏳ Starting main loop in 3 seconds...")
+    time.sleep(3)
+    
 except Exception as e:
     SYMBOLS = ["BTCUSDT","ETHUSDT"]
     print("Warning retrieving top symbols, defaulting to BTCUSDT & ETHUSDT.")
 
 # ===== MAIN LOOP =====
+cycle_count = 0
 while True:
     try:
+        cycle_count += 1
+        print(f"\n🔄 CYCLE {cycle_count} STARTED at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
+        
         # Check for BTC volatility spikes
         if btc_volatility_spike():
             volatility_pause_until = time.time() + VOLATILITY_PAUSE
@@ -794,9 +803,11 @@ while True:
             summary()
             last_summary = now
 
-        print(f"\n🔁 Cycle completed at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
+        print(f"\n✅ Cycle {cycle_count} completed at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
+        print(f"⏳ Waiting {CHECK_INTERVAL} seconds for next cycle...")
         time.sleep(CHECK_INTERVAL)
         
     except Exception as e:
-        print("Main loop error:", e)
-        time.sleep(5)
+        print(f"❌ Main loop error: {e}")
+        print("🔄 Restarting main loop in 10 seconds...")
+        time.sleep(10)
