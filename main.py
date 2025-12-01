@@ -30,8 +30,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "changeme")
 
-# ==== FIX FOR RENDER.COM: Use /tmp for database ====
-DB_PATH = os.getenv("DB_PATH", "/tmp/signals.db")
+# ==== RENDER.COM FIX: Use current directory for database ====
+DB_PATH = "signals.db"  # Changed from /app/data/signals.db to local file
 
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", 10))
 TOP_N = int(os.getenv("TOP_N", 60))
@@ -71,11 +71,7 @@ async def tg(msg: str):
 async def init_db():
     global db_conn
     try:
-        # ==== FIX FOR RENDER.COM: Use current directory instead of /app ====
-        db_dir = os.path.dirname(DB_PATH)
-        if db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir, exist_ok=True)
-        
+        # ==== RENDER.COM FIX: Use local file, no directory creation needed ====
         db_conn = await aiosqlite.connect(DB_PATH)
         await db_conn.execute("PRAGMA journal_mode=WAL;")
         await db_conn.execute("PRAGMA synchronous=NORMAL;")
@@ -498,6 +494,10 @@ app = FastAPI()
 async def root():
     return {"status": "RomeOPT Bybit Scanner", "timeframes": TIMEFRAMES}
 
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.datetime.utcnow().isoformat()}
+
 @app.post("/webhook")
 async def webhook(request: Request):
     token = request.headers.get("X-Auth","")
@@ -507,72 +507,51 @@ async def webhook(request: Request):
     log.info("Webhook received: %s", data)
     return {"ok":True}
 
+# ---------------- BACKGROUND TASK MANAGEMENT ----------------
+async def start_background_tasks():
+    """Start background scanning and monitoring tasks"""
+    await init_db()
+    
+    global exchange
+    exchange = ccxt.bybit({
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': 'spot',
+        }
+    })
+    
+    # Test connection
+    await exchange.load_markets()
+    log.info("✅ Connected to Bybit successfully")
+    
+    await tg("🏆 ROMEOPT 6-Step Scanner Started - Bybit Edition\n📊 Timeframes: 30m, 1h, 2h, 3h, 4h")
+    
+    # Start background tasks
+    asyncio.create_task(scan_loop(exchange))
+    asyncio.create_task(monitor_signals())
+
 # ---------------- MAIN ----------------
-async def main():
-    try:
-        # Initialize database
-        await init_db()
-        
-        # Initialize Bybit exchange
-        global exchange
-        exchange = ccxt.bybit({
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'spot',
-            }
-        })
-        
-        # Test connection
-        await exchange.load_markets()
-        log.info("✅ Connected to Bybit successfully")
-        
-        await tg("🏆 ROMEOPT 6-Step Scanner Started - Bybit Edition\n📊 Timeframes: 30m, 1h, 2h, 3h, 4h")
-        
-        # Run both coroutines
-        scan_task = asyncio.create_task(scan_loop(exchange))
-        monitor_task = asyncio.create_task(monitor_signals())
-        
-        # Wait for both tasks
-        await asyncio.gather(scan_task, monitor_task)
-        
-    except KeyboardInterrupt:
-        log.info("Shutdown requested by user")
-    except Exception as e:
-        log.error(f"Fatal error in main: {e}")
-        await tg(f"❌ Bot crashed: {e}")
-        raise
-    finally:
-        # Cleanup
-        log.info("Cleaning up resources...")
+if __name__ == "__main__":
+    # ==== RENDER.COM ADAPTATION: Always run as web server ====
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--http", action="store_true", help="Run HTTP server")
+    args = parser.parse_args()
+    
+    # On Render, always run HTTP server with background tasks
+    port = int(os.getenv("PORT", 9000))
+    
+    # Create async startup
+    @app.on_event("startup")
+    async def startup_event():
+        await start_background_tasks()
+    
+    @app.on_event("shutdown")
+    async def shutdown_event():
         if db_conn:
             await db_conn.close()
         if exchange:
             await exchange.close()
-
-if __name__ == "__main__":
-    # For Render.com, you need to run it as a web service
-    # Set PORT environment variable from Render
-    port = int(os.getenv("PORT", 9000))
     
-    # If running on Render, start the web server
-    if os.getenv("RENDER", "false").lower() == "true":
-        log.info(f"🚀 Starting web server on port {port}")
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
-    else:
-        # For local development
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--http", action="store_true", help="Run HTTP server")
-        args = parser.parse_args()
-        
-        if args.http:
-            uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
-        else:
-            try:
-                asyncio.run(main())
-            except KeyboardInterrupt:
-                print("\nBot stopped by user")
-                exit(0)
-            except Exception as e:
-                print(f"Fatal error: {e}")
-                exit(1)
+    # Run the server
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
