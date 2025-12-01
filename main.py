@@ -57,15 +57,44 @@ def escape_html(msg: str) -> str:
     if not msg: return "-"
     return str(msg).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-async def tg(msg: str):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
+async def tg(msg: str, retry_count: int = 3):
+    """Send message to Telegram with retry logic"""
+    if not TELEGRAM_TOKEN:
+        log.error("TELEGRAM_BOT_TOKEN environment variable is not set!")
+        return False
+    
+    if not TELEGRAM_CHAT_ID:
+        log.error("TELEGRAM_CHAT_ID environment variable is not set!")
+        return False
+    
     safe_msg = escape_html(msg)
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    async with httpx.AsyncClient() as client:
+    
+    # Try multiple times in case of network issues
+    for attempt in range(retry_count):
         try:
-            await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": safe_msg, "parse_mode":"HTML"})
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, json={
+                    "chat_id": TELEGRAM_CHAT_ID, 
+                    "text": safe_msg, 
+                    "parse_mode": "HTML"
+                })
+                
+                if response.status_code == 200:
+                    log.info(f"✅ Telegram message sent successfully (attempt {attempt + 1})")
+                    return True
+                else:
+                    log.warning(f"Telegram API error {response.status_code} (attempt {attempt + 1}): {response.text}")
+                    
         except Exception as e:
-            log.warning(f"Telegram send failed: {e}")
+            log.warning(f"Telegram send failed (attempt {attempt + 1}): {e}")
+        
+        # Wait before retry (except on last attempt)
+        if attempt < retry_count - 1:
+            await asyncio.sleep(2)
+    
+    log.error("Failed to send Telegram message after all retries")
+    return False
 
 # ---------------- DATABASE ----------------
 async def init_db():
@@ -524,12 +553,27 @@ async def start_background_tasks():
     await exchange.load_markets()
     log.info("✅ Connected to Bybit successfully")
     
-    await tg("🏆 ROMEOPT 6-Step Scanner Started - Bybit Edition\n📊 Timeframes: 30m, 1h, 2h, 3h, 4h")
+    # Send startup message with retry and logging
+    startup_message = """🏆 ROMEOPT 6-Step Scanner Started - Bybit Edition
+📊 Timeframes: 30m, 1h, 2h, 3h, 4h
+⚡ Enhanced TP/SL System Active
+📈 Scanning Bybit USDT pairs"""
+    
+    log.info("Sending Telegram startup message...")
+    
+    # Try to send startup message
+    success = await tg(startup_message, retry_count=5)
+    
+    if success:
+        log.info("✅ Startup message sent to Telegram")
+    else:
+        log.warning("⚠️ Failed to send startup message to Telegram - continuing anyway")
     
     # Start background tasks
     asyncio.create_task(scan_loop(exchange))
     asyncio.create_task(monitor_signals())
-
+    
+    log.info("✅ Background tasks started successfully")
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
     # ==== RENDER.COM ADAPTATION: Always run as web server ====
