@@ -16,6 +16,7 @@ LIVE ROMEOPT 6-STEP SCANNER (Enhanced + Elite Features)
 - HTF + Sweep scoring threshold
 - Elite multi-timeframe confirmation (15m,1h,4h)
 - ✅ NEW: 4H EMA TREND FILTER (100% WIN RATE)
+- 🚫 NEW: LOSER ELIMINATION FILTERS (Trend ≥0.30, SL ≤8%, Asset Blacklist)
 """
 
 import os, time, asyncio, logging, datetime
@@ -52,6 +53,16 @@ MIN_RR_RATIO = 1.2  # Minimum risk/reward ratio 1:1.2
 TREND_FILTER_ENABLED = True  # Enable 100% win rate trend filter
 TREND_EMA_PERIOD = 20  # EMA period for trend detection
 MIN_TREND_CONFIDENCE = 0.5  # Minimum trend strength to filter
+
+# ===== LOSER ELIMINATION FILTERS =====
+FILTER_TREND_STRENGTH = True  # Filter 1: Trend Strength ≥ 0.30
+MIN_TREND_STRENGTH = 0.30     # Minimum trend strength to accept
+
+FILTER_SL_DISTANCE = True     # Filter 2: Stop-Loss Distance ≤ 8%
+MAX_SL_DISTANCE_PCT = 8.0     # Maximum SL distance as percentage
+
+FILTER_ASSET_BLACKLIST = True # Filter 4: Asset Blacklist
+BLACKLISTED_ASSETS = ["H/USDT", "XAUT/USDT", "A8/USDT", "ZRO/USDT", "MERL/USDT"]
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
@@ -211,6 +222,45 @@ def calculate_trend_strength(df: pd.DataFrame, period=20):
     trend_strength = min(normalized_slope * 100, 1.0)  # Cap at 1.0
     
     return float(trend_strength)
+
+# ---------------- LOSER ELIMINATION FILTERS ----------------
+def check_loser_filters(signal: dict, df: pd.DataFrame = None) -> tuple:
+    """
+    Apply the 3 loser elimination filters
+    Returns: (should_reject, rejection_reason)
+    """
+    symbol = signal.get("symbol", "")
+    side = signal.get("side", "")
+    entry = signal.get("entry", 0)
+    sl = signal.get("sl", 0)
+    trend_strength = signal.get("trend_strength", 0.0)
+    
+    rejection_reason = ""
+    
+    # Filter 1: Trend Strength Filter
+    if FILTER_TREND_STRENGTH:
+        if trend_strength < MIN_TREND_STRENGTH:
+            rejection_reason = f"Trend strength {trend_strength:.2f} < {MIN_TREND_STRENGTH}"
+            return True, rejection_reason
+    
+    # Filter 2: Stop-Loss Distance Filter
+    if FILTER_SL_DISTANCE and entry > 0 and sl > 0:
+        if side == "BUY":
+            sl_distance_pct = ((entry - sl) / entry) * 100
+        else:  # SELL
+            sl_distance_pct = ((sl - entry) / entry) * 100
+        
+        if sl_distance_pct > MAX_SL_DISTANCE_PCT:
+            rejection_reason = f"SL distance {sl_distance_pct:.1f}% > {MAX_SL_DISTANCE_PCT}%"
+            return True, rejection_reason
+    
+    # Filter 4: Asset Blacklist
+    if FILTER_ASSET_BLACKLIST:
+        if symbol in BLACKLISTED_ASSETS:
+            rejection_reason = f"Asset {symbol} is blacklisted"
+            return True, rejection_reason
+    
+    return False, ""  # Signal passes all filters
 
 # ---------------- 100% WIN RATE TREND FILTER ----------------
 async def check_4h_trend_alignment(exchange, symbol: str, side: str):
@@ -441,6 +491,16 @@ async def generate_signal_romeopt(exchange, df: pd.DataFrame, symbol: str, tf: s
         if rr_ratio < MIN_RR_RATIO:
             return None
     
+    # ---------------- NEW: LOSER ELIMINATION FILTERS ----------------
+    if sig:
+        should_reject, reject_reason = check_loser_filters(sig, df)
+        if should_reject:
+            log.info(f"❌ Loser filter REJECTED {symbol} {side}: {reject_reason}")
+            return None
+        
+        # Add filter info to reasons list
+        sig["reason_list"].append("Loser Filters ✅")
+    
     return sig
 
 # ---------------- TP/SL HELPERS ----------------
@@ -630,6 +690,7 @@ async def scan_loop(exchange):
             top = sorted([(s,v.get("quoteVolume",0)) for s,v in tickers.items() if s.endswith("USDT")], key=lambda x:x[1], reverse=True)[:TOP_N]
             signals_found = 0
             trend_filter_rejections = 0
+            loser_filter_rejections = 0
             
             for symbol,_ in top:
                 if deprioritized(symbol): continue
@@ -661,12 +722,12 @@ Breakdown:{', '.join(sig['reason_list'])}""")
                         last_signal_time[key]=time.time()
                         signals_found+=1
                     else:
-                        # Track trend filter rejections
+                        # Track rejections
                         trend_aligned = sig.get("trend_aligned", True) if sig else True
                         if not trend_aligned:
                             trend_filter_rejections += 1
             
-            log.info(f"📊 Scan complete: {signals_found} RomeOPT signals found | Trend filter rejected: {trend_filter_rejections}")
+            log.info(f"📊 Scan complete: {signals_found} RomeOPT signals found | Trend filter rejected: {trend_filter_rejections} | Loser filters rejected: {loser_filter_rejections}")
             
         except Exception as e: 
             log.error(f"Scan error: {e}")
@@ -683,7 +744,12 @@ async def root():
         "timeframes": TIMEFRAMES,
         "trend_filter_enabled": TREND_FILTER_ENABLED,
         "min_score": MIN_SCORE,
-        "min_rr_ratio": MIN_RR_RATIO
+        "min_rr_ratio": MIN_RR_RATIO,
+        "loser_filters": {
+            "trend_strength": {"enabled": FILTER_TREND_STRENGTH, "min": MIN_TREND_STRENGTH},
+            "sl_distance": {"enabled": FILTER_SL_DISTANCE, "max_pct": MAX_SL_DISTANCE_PCT},
+            "asset_blacklist": {"enabled": FILTER_ASSET_BLACKLIST, "assets": BLACKLISTED_ASSETS}
+        }
     }
 
 @app.get("/health")
@@ -719,7 +785,15 @@ async def stats():
                     "avg_rr_ratio": round(avg_rr, 2) if avg_rr else 0,
                     "avg_trend_strength": round(avg_trend, 2) if avg_trend else 0,
                     "trend_aligned_signals": trend_aligned,
-                    "trend_filter_enabled": TREND_FILTER_ENABLED
+                    "trend_filter_enabled": TREND_FILTER_ENABLED,
+                    "loser_filters": {
+                        "enabled": FILTER_TREND_STRENGTH or FILTER_SL_DISTANCE or FILTER_ASSET_BLACKLIST,
+                        "active_filters": {
+                            "trend_strength": FILTER_TREND_STRENGTH,
+                            "sl_distance": FILTER_SL_DISTANCE,
+                            "asset_blacklist": FILTER_ASSET_BLACKLIST
+                        }
+                    }
                 }
             else:
                 return {"message": "No signals yet"}
@@ -758,7 +832,11 @@ async def start_background_tasks():
 ⚡ Enhanced TP/SL System Active
 📈 Scanning Bybit USDT pairs
 ✅ 100% Win Rate Trend Filter: {'ENABLED' if TREND_FILTER_ENABLED else 'DISABLED'}
-🎯 Trading WITH 4H EMA Trend Only"""
+🎯 Trading WITH 4H EMA Trend Only
+🚫 LOSER ELIMINATION FILTERS ACTIVE:
+   • Trend Strength ≥ {MIN_TREND_STRENGTH}
+   • SL Distance ≤ {MAX_SL_DISTANCE_PCT}%
+   • Blacklisted: {', '.join(BLACKLISTED_ASSETS)}"""
     
     log.info("Sending Telegram startup message...")
     
